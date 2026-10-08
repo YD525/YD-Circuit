@@ -120,6 +120,11 @@ namespace YD_Circuit
         public PowerItem Object;
         public int BlockID = 0;
         public long UniqueID = 0;
+
+        public int LastUsePower = 0;     
+        public bool Measured = false;     
+        public int LastDriveFrame = -1;
+
         public RootItem(PowerItem Item)
         {
             UniqueID = IDGen.GetUniqueID64(Item);

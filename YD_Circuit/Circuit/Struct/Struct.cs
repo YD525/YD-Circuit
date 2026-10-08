@@ -1,5 +1,7 @@
 ﻿using System.Collections.Generic;
 using System;
+using static PowerItem;
+using System.Runtime.InteropServices;
 
 public class ThreadSafeList<T>
 {
@@ -79,6 +81,49 @@ public class MainPower
         {
             System.Threading.Monitor.Exit(_LockObj);
         }
+    }
+}
+
+public class PowerSourceInFo
+{
+    public long UniqueID = 0;
+    public PowerItem Object;
+
+    public ushort MaxOutput = 0;
+    public ushort CurrentPower = 0;
+    public ushort CurrentFuel = 0;
+
+    public bool IsRoot = false;
+
+    public PowerItemTypes Type = PowerItemTypes.None;
+}
+
+public class IDGen
+{
+    public static long GetUniqueID64(PowerItem Item)
+    {
+        if (Item == null) return 0;
+
+        long Offset = 32768;
+        long X = (long)Item.Position.x + Offset;
+        long Y = (long)Item.Position.y + Offset;
+        long Z = (long)Item.Position.z + Offset;
+        long BlockId = (long)Item.BlockID;
+
+        return (BlockId << 48) | ((Y & 0xFFFF) << 32) | ((X & 0xFFFF) << 16) | (Z & 0xFFFF);
+    }
+}
+
+public class RootItem
+{
+    public PowerItem Object;
+    public int BlockID = 0;
+    public long UniqueID = 0;
+    public RootItem(PowerItem Item)
+    {
+        UniqueID = IDGen.GetUniqueID64(Item);
+        BlockID = Item.BlockID;
+        Object = Item;
     }
 }
 

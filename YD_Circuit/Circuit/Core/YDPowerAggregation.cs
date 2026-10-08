@@ -3,103 +3,111 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using UnityEngine;
-using System.Linq;
 using static PowerItem;
+using System.Linq;
 
 public class YDPowerAggregation
 {
     public static YDPowerAggregation Instance = new YDPowerAggregation();
 
-    public ThreadSafeList<PowerItem> Devices = new ThreadSafeList<PowerItem>();
-    public ConcurrentDictionary<PowerItem, MainPower> Power = new ConcurrentDictionary<PowerItem, MainPower>();
+    public ConcurrentDictionary<long, RootItem> Devices = new ConcurrentDictionary<long, RootItem>();
+    public ConcurrentDictionary<long, MainPower> Power = new ConcurrentDictionary<long, MainPower>();
 
     public Thread PowerTrd = null;
     private ConcurrentQueue<Action> TrdJobs = new ConcurrentQueue<Action>();
 
-    public void CheckExpired(ThreadSafeList<PowerItem> DevicesRef)
+    public void CheckExpired()
     {
-        if (DevicesRef == null) return;
+        if (Devices == null) return;
 
         UnitySelfTrd(() =>
         {
-            List<PowerItem> ExpiredRoots = new List<PowerItem>();
-
-            DevicesRef.RemoveAll(Item =>
+            foreach (var Pair in Devices)
             {
-                bool Expired = false;
-
-                if (Item == null)
-                {
-                    Expired = true;
-                }
-                else
-                if (Item.Root != null)
-                {
-                    Expired = true;
-                }
-                else
-                {
-                    if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Item.Position))
-                    {
-                        Expired = true;
-                    }
-                }
+                var Item = Pair.Value;
+                bool Expired = Item == null || Item.Object == null || Item.Object.Root != null
+                    || !PowerManager.Instance.PowerItemDictionary.TryGetValue(Item.Object.Position, out var Cur)
+                    || Cur != Item.Object;
 
                 if (Expired)
                 {
-                    ExpiredRoots.Add(Item);
-                }
-
-                return false;
-            });
-
-            for (int i = 0; i < ExpiredRoots.Count; i++)
-            {
-                var Key = ExpiredRoots[i];
-
-                while (Power.ContainsKey(Key))
-                {
-                    if (Power.TryRemove(Key, out MainPower Value))
-                    {
-                        break;
-                    }
-                    Thread.Yield();
+                    Devices.TryRemove(Pair.Key, out _);
+                    Power.TryRemove(Pair.Key, out _);
                 }
             }
         });
     }
 
-    public static List<PowerItem> GetAllConnectedNodes(PowerItem StartNode)
+    public static void GetAllConnectedNodes(PowerItem StartNode, out List<PowerSourceInFo> InFos, out Dictionary<long, PowerItem> Pool)
     {
-        List<PowerItem> Result = new List<PowerItem>();
-        if (StartNode == null) return Result;
+        InFos = new List<PowerSourceInFo>();
+        Pool = new Dictionary<long, PowerItem>();
+
+        if (StartNode == null)
+            return;
 
         HashSet<PowerItem> Visited = new HashSet<PowerItem>();
-        TraverseConnectedNodes(StartNode, Visited, Result);
 
-        return Result;
+        TraverseConnectedNodes(StartNode, Visited, InFos, Pool);
     }
 
-    private static void TraverseConnectedNodes(PowerItem CurrentNode, HashSet<PowerItem> Visited, List<PowerItem> Result)
+    private static void TraverseConnectedNodes(PowerItem CurrentNode, HashSet<PowerItem> Visited, List<PowerSourceInFo> InFos, Dictionary<long, PowerItem> Pool)
     {
-        if (CurrentNode == null) return;
+        if (CurrentNode == null)
+            return;
 
-        if (!Visited.Add(CurrentNode)) return;
+        if (!Visited.Add(CurrentNode))
+            return;
 
-        Result.Add(CurrentNode);
+        long ItemUniqueID = IDGen.GetUniqueID64(CurrentNode);
+
+        Pool[ItemUniqueID] = CurrentNode;
+
+        ushort MaxOutput = 0;
+        ushort CurrentPower = 0;
+        ushort CurrentFuel = 0;
+        PowerItemTypes PType = CurrentNode.PowerItemType;
+
+        if (CurrentNode is PowerGenerator Generator)
+        {
+            MaxOutput = Generator.MaxOutput;
+            CurrentPower = Generator.CurrentPower;
+            CurrentFuel = Generator.CurrentFuel;
+        }
+        else
+        if (CurrentNode is PowerSource Source)
+        {
+            MaxOutput = Source.MaxOutput;
+            CurrentPower = Source.CurrentPower;
+        }
+
+        bool IsRoot = false;
+
+        if (CurrentNode.Root == null)
+        {
+            IsRoot = true;
+        }
+
+        InFos.Add(new PowerSourceInFo
+        {
+            UniqueID = ItemUniqueID,
+            Object = CurrentNode,
+            MaxOutput = MaxOutput,
+            CurrentPower = CurrentPower,
+            CurrentFuel = CurrentFuel,
+            Type = PType,
+            IsRoot = IsRoot
+        });
 
         if (CurrentNode.PowerChildren())
         {
             for (int i = 0; i < CurrentNode.Children.Count; i++)
             {
-                PowerItem Child = CurrentNode.Children[i];
-
-                if (Child is PowerSource) continue;
-
-                TraverseConnectedNodes(Child, Visited, Result);
+                TraverseConnectedNodes(CurrentNode.Children[i], Visited, InFos, Pool);
             }
         }
     }
+
     private int UnityThreadId;
     public void Start()
     {
@@ -116,30 +124,50 @@ public class YDPowerAggregation
 
                     try
                     {
-                        CheckExpired(Devices);
+                        CheckExpired();
 
-                        List<PowerItem> All = Devices.GetAllSnapshot();
+                        var Array = Devices.ToList();
 
-                        for (int i = 0; i < All.Count; i++)
+                        for (int i = 0; i < Array.Count; i++)
                         {
-                            List<PowerSource> Banks = new List<PowerSource>();
-                            List<PowerSource> Generators = new List<PowerSource>();
+                            long UniqueID = Array[i].Value.UniqueID;
 
-                            List<PowerItem> Nodes = GetAllConnectedNodes(All[i]);
+                            int UsedPower = 0;
 
-                            PowerItem Root = All[i];
+                            bool IsOK = UnitySelfTrd(() =>
+                            {
+                                UsedPower = CalculateSubtreePowerRequired(Array[i].Value.Object);
+                            });
 
-                            if (Root == null)
+                            if (!IsOK)
                             {
                                 continue;
                             }
 
-                            if (!Power.ContainsKey(Root))
+                            List<long> Banks = new List<long>();
+                            List<long> Generators = new List<long>();
+
+                            List<PowerSourceInFo> Nodes = null;
+                            Dictionary<long, PowerItem> Pool = null;
+
+                            UnitySelfTrd(() =>
                             {
-                                Power.TryAdd(Root, new MainPower());
+                                GetAllConnectedNodes(Array[i].Value.Object, out List<PowerSourceInFo> SetInFos, out Dictionary<long, PowerItem> SetPool);
+                                Nodes = SetInFos;
+                                Pool = SetPool;
+                            });
+
+                            if (Nodes == null)
+                            {
+                                continue;
                             }
 
-                            var PowerValue = Power[Root];
+                            if (!Power.ContainsKey(UniqueID))
+                            {
+                                Power.TryAdd(UniqueID, new MainPower());
+                            }
+
+                            MainPower PowerValue = Power[UniqueID];
 
                             using (PowerValue.AcquireLock())
                             {
@@ -150,283 +178,269 @@ public class YDPowerAggregation
 
                             for (int ir = 0; ir < Nodes.Count; ir++)
                             {
-                                if (Nodes[ir] != null)
-                                    if (Nodes[ir] is PowerSource)
-                                    {
-                                        PowerSource Device = (PowerSource)Nodes[ir];
+                                var InFo = Nodes[ir];
 
+                                if (InFo != null)
+                                {
+                                    if (InFo.Type == PowerItemTypes.Generator || InFo.Type == PowerItemTypes.BatteryBank)
+                                    {
                                         ushort MaxOutput = 0;
                                         ushort CurrentPower = 0;
                                         ushort CurrentFuel = 0;
 
                                         PowerItemTypes Type = PowerItemTypes.None;
 
-                                        bool IsNull = true;
+                                        MaxOutput = InFo.MaxOutput;
+                                        CurrentPower = InFo.CurrentPower;
+                                        CurrentFuel = InFo.CurrentFuel;
+
+                                        Type = InFo.Type;
+
+                                        if (Type == PowerItem.PowerItemTypes.BatteryBank)
+                                        {
+                                            // Empty batteries cannot supply anything
+                                            if (CurrentPower == 0)
+                                            {
+                                                continue;
+                                            }
+
+                                            using (PowerValue.AcquireLock())
+                                            {
+                                                // Battery output this cycle: limited by output rate and stored power
+                                                PowerValue.BatteryTotalPower += Mathf.Min(MaxOutput, CurrentPower);
+                                            }
+
+                                            Banks.Add(InFo.UniqueID);
+                                        }
+                                        else
+                                          if (Type == PowerItem.PowerItemTypes.Generator)
+                                        {
+                                            // Generators without fuel cannot produce power, ignore them
+                                            if (CurrentFuel == 0)
+                                            {
+                                                continue;
+                                            }
+
+                                            using (PowerValue.AcquireLock())
+                                            {
+                                                // Generator output right now: limited by output rate and buffered power
+                                                PowerValue.GeneratorTotalPower += Mathf.Min(MaxOutput, CurrentPower);
+                                                // Generator output if it runs at full rated output
+                                                PowerValue.ExpectedGeneratorTotalPower += MaxOutput;
+                                            }
+
+                                            Generators.Add(InFo.UniqueID);
+                                        }
+                                    }
+                                }
+                            }
+
+                            PowerValue = Power[UniqueID];
+
+                            if (PowerValue != null)
+                            {
+                                int B_P, G_P, G_B_P, EG_P, EG_B_P;
+
+                                using (PowerValue.AcquireLock())
+                                {
+                                    B_P = PowerValue.BatteryTotalPower;
+                                    G_P = PowerValue.GeneratorTotalPower;
+                                    G_B_P = PowerValue.GeneratorTotalPower + PowerValue.BatteryTotalPower;
+                                    EG_P = PowerValue.ExpectedGeneratorTotalPower;
+                                    EG_B_P = PowerValue.ExpectedGeneratorTotalPower + PowerValue.BatteryTotalPower;
+                                }
+
+                                if (B_P >= (UsedPower * 2))
+                                {
+                                    // Batteries alone are enough: shut down every generator
+                                    for (int ir = 0; ir < Generators.Count; ir++)
+                                    {
+                                        long QueryID = Generators[ir];
+
+                                        // Device state must be changed on the Unity main thread
+                                        UnitySelfTrd(() =>
+                                        {
+                                            if (Pool.ContainsKey(QueryID))
+                                            {
+                                                if (Pool[QueryID] != null && Pool[QueryID] is PowerGenerator)
+                                                {
+                                                    var Generator = Pool[QueryID] as PowerGenerator;
+                                                    // Generator is no longer registered in the power manager
+                                                    if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
+                                                    {
+                                                        return;
+                                                    }
+                                                    // Auto shutdown
+                                                    Generator.IsOn = false;
+                                                }
+                                            }
+                                        }, true);
+                                    }
+
+                                    using (PowerValue.AcquireLock())
+                                    {
+                                        PowerValue.Power = B_P;
+                                        PowerValue.SupplyMode = PowerSupplyMode.B_P;
+                                    }
+                                }
+                                else
+                                if (G_P >= UsedPower)
+                                {
+                                    // Generators' current buffered output alone covers the demand,
+                                    // no extra generation needed
+                                    using (PowerValue.AcquireLock())
+                                    {
+                                        PowerValue.Power = G_P;
+                                        PowerValue.SupplyMode = PowerSupplyMode.G_P;
+                                    }
+                                }
+                                else
+                                if (G_B_P >= UsedPower && B_P > 0)
+                                {
+                                    // Batteries + generators' current buffered output already cover the demand,
+                                    // no extra generation needed
+                                    using (PowerValue.AcquireLock())
+                                    {
+                                        PowerValue.Power = G_B_P;
+                                        PowerValue.SupplyMode = PowerSupplyMode.G_B_P;
+                                    }
+                                }
+                                else
+                                if (EG_P >= UsedPower)
+                                {
+                                    // Generators at full rated output alone would cover the demand:
+                                    // turn them on and raise their output (on the Unity main thread)
+                                    for (int ir = 0; ir < Generators.Count; ir++)
+                                    {
+                                        long QueryID = Generators[ir];
 
                                         UnitySelfTrd(() =>
                                         {
-                                            MaxOutput = Device.MaxOutput;
-                                            CurrentPower = Device.CurrentPower;
-                                            Type = Device.PowerItemType;
-
-                                            if (Device != null)
+                                            if (Pool.ContainsKey(QueryID))
                                             {
-                                                IsNull = false;
-
-                                                if (Device is PowerGenerator)
+                                                if (Pool[QueryID] != null && Pool[QueryID] is PowerGenerator)
                                                 {
-                                                    CurrentFuel = ((PowerGenerator)Device).CurrentFuel;
+                                                    var Generator = Pool[QueryID] as PowerGenerator;
+                                                    // Generator is no longer registered in the power manager
+                                                    if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
+                                                    {
+                                                        return;
+                                                    }
+
+                                                    // Fuel may have run out since the statistics were collected
+                                                    if (Generator.CurrentFuel > 0)
+                                                    {
+                                                        if (!Generator.IsOn)
+                                                        {
+                                                            // Smart start: turn the generator on, then raise its output
+                                                            Generator.IsOn = true;
+                                                            Generator.TickPowerGeneration();
+                                                        }
+                                                        else
+                                                        {
+                                                            // Already running: burn fuel to raise its buffered power
+                                                            Generator.TickPowerGeneration();
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        });
-
-                                        if (!IsNull)
-                                        {
-                                            if (Type == PowerItem.PowerItemTypes.BatteryBank)
-                                            {
-                                                // Empty batteries cannot supply anything
-                                                if (CurrentPower == 0)
-                                                {
-                                                    continue;
-                                                }
-
-                                                using (PowerValue.AcquireLock())
-                                                {
-                                                    // Battery output this cycle: limited by output rate and stored power
-                                                   PowerValue.BatteryTotalPower += Mathf.Min(MaxOutput,CurrentPower);
-                                                }
-
-                                                Banks.Add(Device);
-                                            }
-                                            else
-                                            {
-                                                // Generators without fuel cannot produce power, ignore them
-                                                if (CurrentFuel == 0)
-                                                {
-                                                    continue;
-                                                }
-
-                                                using (PowerValue.AcquireLock())
-                                                {
-                                                    // Generator output right now: limited by output rate and buffered power
-                                                    PowerValue.GeneratorTotalPower += Mathf.Min(Device.MaxOutput,Device.CurrentPower);
-                                                    // Generator output if it runs at full rated output
-                                                    PowerValue.ExpectedGeneratorTotalPower += Device.MaxOutput;
-                                                }
-                                                  
-                                                Generators.Add(Device);
-                                            }
-                                        }
+                                        }, true);
                                     }
 
-                            }
-
-                            int UsedPower = CalculateSubtreePowerRequired(Root);
-
-                            int B_P,G_P,G_B_P,EG_P, EG_B_P;
-
-
-                            using (PowerValue.AcquireLock())
-                            {
-                                B_P = PowerValue.BatteryTotalPower;
-                                G_P = PowerValue.GeneratorTotalPower;
-                                G_B_P = PowerValue.GeneratorTotalPower + PowerValue.BatteryTotalPower;
-                                EG_P = PowerValue.ExpectedGeneratorTotalPower;
-                                EG_B_P = PowerValue.ExpectedGeneratorTotalPower + PowerValue.BatteryTotalPower;
-                            }
-
-                            if (B_P >= (UsedPower * 2))
-                            {
-                                // Batteries alone are enough: shut down every generator
-                                for (int ir = 0; ir < Generators.Count; ir++)
-                                {
-                                    // Copy to a local so each queued action captures its own generator
-                                    PowerSource Generator = Generators[ir];
-
-                                    // Device state must be changed on the Unity main thread
-                                    UnitySelfTrd(() =>
+                                    using (PowerValue.AcquireLock())
                                     {
-                                        // Generator was destroyed
-                                        if (Generator == null)
-                                        {
-                                            return;
-                                        }
-
-                                        // Generator is no longer registered in the power manager
-                                        if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
-                                        {
-                                            return;
-                                        }
-
-                                        // Auto shutdown
-                                        Generator.IsOn = false;
-                                    },true);
+                                        PowerValue.Power = G_P;
+                                        PowerValue.SupplyMode = PowerSupplyMode.EG_P;
+                                    }
                                 }
-
-                                using (PowerValue.AcquireLock())
+                                else
+                                if (EG_B_P >= UsedPower && B_P > 0)
                                 {
-                                    PowerValue.Power = B_P;
-                                    PowerValue.SupplyMode = PowerSupplyMode.B_P;
-                                } 
-                            }
-                            else
-                            if (G_P >= UsedPower)
-                            {
-                                // Generators' current buffered output alone covers the demand,
-                                // no extra generation needed
-                                using (PowerValue.AcquireLock())
-                                {
-                                    PowerValue.Power = G_P;
-                                    PowerValue.SupplyMode = PowerSupplyMode.G_P;
-                                }
-                            }
-                            else
-                            if (G_B_P >= UsedPower && B_P > 0)
-                            {
-                                // Batteries + generators' current buffered output already cover the demand,
-                                // no extra generation needed
-                                using (PowerValue.AcquireLock())
-                                {
-                                    PowerValue.Power = G_B_P;
-                                    PowerValue.SupplyMode = PowerSupplyMode.G_B_P;
-                                } 
-                            }
-                            else
-                            if (EG_P >= UsedPower)
-                            {
-                                // Generators at full rated output alone would cover the demand:
-                                // turn them on and raise their output (on the Unity main thread)
-                                for (int ir = 0; ir < Generators.Count; ir++)
-                                {
-                                    PowerSource Generator = Generators[ir];
-
-                                    UnitySelfTrd(() =>
+                                    // Current supply is not enough, but batteries + generators at full rated output would be:
+                                    // turn generators on and raise their output (on the Unity main thread)
+                                    for (int ir = 0; ir < Generators.Count; ir++)
                                     {
-                                        // Generator was destroyed
-                                        if (Generator == null)
-                                        {
-                                            return;
-                                        }
+                                        long QueryID = Generators[ir];
 
-                                        // Generator is no longer registered in the power manager
-                                        if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
+                                        UnitySelfTrd(() =>
                                         {
-                                            return;
-                                        }
-
-                                        // Fuel may have run out since the statistics were collected
-                                        if (((PowerGenerator)Generator).CurrentFuel > 0)
-                                        {
-                                            if (!Generator.IsOn)
+                                            if (Pool.ContainsKey(QueryID))
                                             {
-                                                // Smart start: turn the generator on, then raise its output
-                                                Generator.IsOn = true;
-                                                Generator.TickPowerGeneration();
-                                            }
-                                            else
-                                            {
-                                                // Already running: burn fuel to raise its buffered power
-                                                Generator.TickPowerGeneration();
-                                            }
-                                        }
-                                    },true);
-                                }
+                                                if (Pool[QueryID] != null && Pool[QueryID] is PowerGenerator)
+                                                {
+                                                    var Generator = Pool[QueryID] as PowerGenerator;
+                                                    // Generator is no longer registered in the power manager
+                                                    if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
+                                                    {
+                                                        return;
+                                                    }
 
-                                using (PowerValue.AcquireLock())
-                                {
-                                    PowerValue.Power = G_P;
-                                    PowerValue.SupplyMode = PowerSupplyMode.EG_P;
-                                }
-                            }
-                            else
-                            if (EG_B_P >= UsedPower && B_P > 0)
-                            {
-                                // Current supply is not enough, but batteries + generators at full rated output would be:
-                                // turn generators on and raise their output (on the Unity main thread)
-                                for (int ir = 0; ir < Generators.Count; ir++)
-                                {
-                                    PowerSource Generator = Generators[ir];
+                                                    if (Generator.CurrentFuel > 0)
+                                                    {
+                                                        if (!Generator.IsOn)
+                                                        {
+                                                            Generator.IsOn = true;
+                                                        }
+                                                        else
+                                                        {
+                                                            // Already running: burn fuel to raise its buffered power
+                                                            Generator.TickPowerGeneration();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }, true);
+                                    }
 
-                                    UnitySelfTrd(() =>
+                                    using (PowerValue.AcquireLock())
                                     {
-                                        // Generator was destroyed
-                                        if (Generator == null)
-                                        {
-                                            return;
-                                        }
-
-                                        // Generator is no longer registered in the power manager
-                                        if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
-                                        {
-                                            return;
-                                        }
-
-                                        // Fuel may have run out since the statistics were collected
-                                        if (((PowerGenerator)Generator).CurrentFuel > 0)
-                                        {
-                                            if (!Generator.IsOn)
-                                            {
-                                                // Smart start: turn the generator on, then raise its output
-                                                Generator.IsOn = true;
-                                                Generator.TickPowerGeneration();
-                                            }
-                                            else
-                                            {
-                                                // Already running: burn fuel to raise its buffered power
-                                                Generator.TickPowerGeneration();
-                                            }
-                                        }
-                                    },true);
+                                        PowerValue.Power = G_B_P;
+                                        PowerValue.SupplyMode = PowerSupplyMode.EG_B_P;
+                                    }
                                 }
-
-                                using (PowerValue.AcquireLock())
+                                else
                                 {
-                                    PowerValue.Power = G_B_P;
-                                    PowerValue.SupplyMode = PowerSupplyMode.EG_B_P;
-                                }
-                            }
-                            else
-                            {
-                                // Power shortage: even batteries + generators at full rated output cannot cover the demand.
-                                // Turn every generator on and keep raising its output;
-                                // batteries are already counted in the supply
-                                for (int ir = 0; ir < Generators.Count; ir++)
-                                {
-                                    PowerSource Generator = Generators[ir];
-
-                                    UnitySelfTrd(() =>
+                                    // Power shortage: even batteries + generators at full rated output cannot cover the demand.
+                                    // Turn every generator on and keep raising its output;
+                                    // batteries are already counted in the supply
+                                    for (int ir = 0; ir < Generators.Count; ir++)
                                     {
-                                        // Generator was destroyed
-                                        if (Generator == null)
-                                        {
-                                            return;
-                                        }
+                                        long QueryID = Generators[ir];
 
-                                        // Generator is no longer registered in the power manager
-                                        if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
+                                        UnitySelfTrd(() =>
                                         {
-                                            return;
-                                        }
-
-                                        // Fuel may have run out since the statistics were collected
-                                        if (((PowerGenerator)Generator).CurrentFuel > 0)
-                                        {
-                                            // Smart start: turn the generator on if it was shut down
-                                            if (!Generator.IsOn)
+                                            if (Pool.ContainsKey(QueryID))
                                             {
-                                                Generator.IsOn = true;
+                                                if (Pool[QueryID] != null && Pool[QueryID] is PowerGenerator)
+                                                {
+                                                    var Generator = Pool[QueryID] as PowerGenerator;
+                                                    // Generator is no longer registered in the power manager
+                                                    if (!PowerManager.Instance.PowerItemDictionary.ContainsKey(Generator.Position))
+                                                    {
+                                                        return;
+                                                    }
+
+                                                    if (Generator.CurrentFuel > 0)
+                                                    {
+                                                        // Smart start: turn the generator on if it was shut down
+                                                        if (!Generator.IsOn)
+                                                        {
+                                                            Generator.IsOn = true;
+                                                        }
+
+                                                        // Burn fuel to raise buffered power
+                                                        Generator.TickPowerGeneration();
+                                                    }
+                                                }
                                             }
+                                        }, true);
+                                    }
 
-                                            // Burn fuel to raise buffered power
-                                            Generator.TickPowerGeneration();
-                                        }
-                                    },true);
-                                }
-
-                                using (PowerValue.AcquireLock())
-                                {
-                                    PowerValue.Power = G_B_P;
-                                    PowerValue.SupplyMode = PowerSupplyMode.EG_B_P;
+                                    using (PowerValue.AcquireLock())
+                                    {
+                                        PowerValue.Power = G_B_P;
+                                        PowerValue.SupplyMode = PowerSupplyMode.EG_B_P;
+                                    }
                                 }
                             }
                         }
@@ -457,6 +471,7 @@ public class YDPowerAggregation
             catch (Exception E)
             {
                 Log.Exception(E);
+                return false;
             }
             return true;
         }
@@ -474,12 +489,13 @@ public class YDPowerAggregation
                     Log.Exception(E);
                 }
             });
-            return true; 
+            return true;
         }
 
         using (var DoneEvent = new System.Threading.ManualResetEventSlim(false))
         {
             bool IsCancelled = false;
+            bool Success = false;
 
             TrdJobs.Enqueue(() =>
             {
@@ -488,10 +504,12 @@ public class YDPowerAggregation
                 try
                 {
                     Work.Invoke();
+                    Success = true;
                 }
                 catch (Exception E)
                 {
                     Log.Exception(E);
+                    Success = false;
                 }
                 finally
                 {
@@ -509,11 +527,10 @@ public class YDPowerAggregation
                 return false;
             }
 
-            return true;
+            return Success;
         }
     }
-
-    private void Update()
+    public void Update()
     {
         while (TrdJobs.TryDequeue(out Action Action))
         {
@@ -523,11 +540,7 @@ public class YDPowerAggregation
 
     public void Update(PowerSource Device)
     {
-        if (Device == null)
-        {
-            Update();
-        }
-        else
+        if (Device != null)
         {
             if (Device.PowerItemType == PowerItem.PowerItemTypes.BatteryBank || Device.PowerItemType == PowerItem.PowerItemTypes.Generator)
             {
@@ -535,22 +548,23 @@ public class YDPowerAggregation
                 {
                     return;
                 }
-
                 // If there is no parent device, the device itself is the root
                 PowerItem Root = Device.Root ?? Device;
-                if (!Devices.Contains(Root))
+
+                var Item = new RootItem(Root);
+                if (!Devices.ContainsKey(Item.UniqueID))
                 {
-                    Devices.Add(Root);
+                    Devices.TryAdd(Item.UniqueID, Item);
                 }
             }
         }
     }
 
-    public static ushort CalculateSubtreePowerRequired(PowerItem Item)
+    public static int CalculateSubtreePowerRequired(PowerItem Item)
     {
         if (Item == null) return 0;
 
-        ushort TotalRequired = 0;
+        int TotalRequired = 0;
 
         if (Item is PowerConsumerToggle ConsumerToggle)
         {

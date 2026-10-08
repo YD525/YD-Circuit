@@ -15,31 +15,38 @@ public class GlobalPatch
             if (!__instance.hasChangesLocal)
                 return false;
 
-            ushort TotalPower = 0;
-
-            var Key = (PowerItem)__instance;
-
-            if (YDPowerAggregation.Instance.Power.ContainsKey(Key))
+            if (__instance is PowerItem)
             {
-                var PowerValue = YDPowerAggregation.Instance.Power[Key];
+                ushort TotalPower = 0;
 
-                using (PowerValue.AcquireLock())
+                var Key = new RootItem(((PowerItem)__instance)).UniqueID;
+
+                if (YDPowerAggregation.Instance.Power.ContainsKey(Key))
                 {
-                    TotalPower = (ushort)PowerValue.Power;
+                    var PowerValue = YDPowerAggregation.Instance.Power[Key];
+
+                    using (PowerValue.AcquireLock())
+                    {
+                        TotalPower = (ushort)PowerValue.Power;
+                    }
                 }
-            }
 
-            ushort Before = TotalPower;
-            var Children = __instance.Children;
-            for (int i = 0; i < Children.Count; i++)
+                ushort Before = TotalPower;
+                var Children = __instance.Children;
+                for (int i = 0; i < Children.Count; i++)
+                {
+                    var Child = Children[i];
+                    if (Child is PowerSource) continue;
+                    Child.HandlePowerReceived(ref TotalPower);
+                    if (TotalPower <= 0) break;
+                }
+
+                __instance.LastPowerUsed = (ushort)(Before - TotalPower);
+            }
+            else
             {
-                var Child = Children[i];
-                if (Child is PowerSource) continue;
-                Child.HandlePowerReceived(ref TotalPower);
-                if (TotalPower <= 0) break;
+                return true;
             }
-
-            __instance.LastPowerUsed = (ushort)(Before - TotalPower);
 
             return false;
         }
@@ -65,7 +72,7 @@ public class GlobalPatch
     {
         public static bool Prefix(PowerSource __instance)
         {
-            YDPowerAggregation.Instance.Update(null);
+            YDPowerAggregation.Instance.Update();
 
             if (__instance != null)
             {

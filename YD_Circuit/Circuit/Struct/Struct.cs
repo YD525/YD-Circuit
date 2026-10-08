@@ -45,23 +45,41 @@ public class ThreadSafeList<T>
 }
 
 
-
-
-
-
-
 public class MainPower
 {
-    public int Power = 0;
-    public ushort RequiredPower = 0;
-    public int BatteryTotalPower = 0;
-    public int GeneratorTotalPower = 0;
-    public int ExpectedGeneratorTotalPower = 0;
+    private readonly object _PowerLock = new object();
 
-    public ushort Used = 0;
-    public ushort LastDelivered = 0;
-    public bool Starved = false;
+    public int Power;
+    public ushort RequiredPower;
+    public int BatteryTotalPower;
+    public int GeneratorTotalPower;
+    public int ExpectedGeneratorTotalPower;
+
+    public ushort Used;
+    public ushort LastDelivered;
+    public bool Starved;
     public PowerSupplyMode SupplyMode = PowerSupplyMode.NULL;
+
+    public LockScope AcquireLock()
+    {
+        return new LockScope(_PowerLock);
+    }
+
+    public readonly struct LockScope : System.IDisposable
+    {
+        private readonly object _LockObj;
+
+        public LockScope(object LockObj)
+        {
+            _LockObj = LockObj;
+            System.Threading.Monitor.Enter(_LockObj);
+        }
+
+        public void Dispose()
+        {
+            System.Threading.Monitor.Exit(_LockObj);
+        }
+    }
 }
 
 public enum PowerSupplyMode

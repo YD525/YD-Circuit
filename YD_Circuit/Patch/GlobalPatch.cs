@@ -6,7 +6,10 @@ public class GlobalPatch
     {
         static bool Prefix(PowerSource __instance)
         {
-            if (__instance.Parent != null)
+            if (__instance == null)
+                return false;
+
+            if (__instance.Root != null)
                 return false;
 
             if (!__instance.hasChangesLocal)
@@ -14,9 +17,16 @@ public class GlobalPatch
 
             ushort TotalPower = 0;
 
-            if (YDPowerAggregation.Instance.Power.ContainsKey((PowerItem)__instance))
+            var Key = (PowerItem)__instance;
+
+            if (YDPowerAggregation.Instance.Power.ContainsKey(Key))
             {
-                TotalPower = (ushort)YDPowerAggregation.Instance.Power[(PowerItem)__instance].Power;
+                var PowerValue = YDPowerAggregation.Instance.Power[Key];
+
+                using (PowerValue.AcquireLock())
+                {
+                    TotalPower = (ushort)PowerValue.Power;
+                }
             }
 
             ushort Before = TotalPower;
@@ -47,6 +57,28 @@ public class GlobalPatch
             }
 
             return true;
+        }
+    }
+
+    [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.Update))]
+    public static class Patch_HandleUpdate
+    {
+        public static bool Prefix(PowerSource __instance)
+        {
+            YDPowerAggregation.Instance.Update(null);
+
+            if (__instance != null)
+            {
+                if (__instance is PowerBatteryBank || __instance is PowerGenerator)
+                {
+                    if (__instance.Root == null)
+                    {
+                        YDPowerAggregation.Instance.Update(__instance);
+                    }
+                }
+            }
+
+            return true; 
         }
     }
 }

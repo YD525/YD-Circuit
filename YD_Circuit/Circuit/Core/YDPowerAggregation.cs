@@ -252,6 +252,16 @@ namespace YD_Circuit
                                         EG_B_P = PowerValue.ExpectedGeneratorTotalPower + PowerValue.BatteryTotalPower;
                                     }
 
+                                    if (UsedPower > 0)
+                                    {
+                                        Debug.Log("B_P:" + B_P);
+                                        Debug.Log("G_P:" + B_P);
+                                        Debug.Log("G_B_P:" + B_P);
+                                        Debug.Log("EG_P:" + B_P);
+                                        Debug.Log("EG_B_P:" + B_P);
+                                        Debug.Log("UsedPower:" + UsedPower);
+                                    }
+
                                     if (B_P >= (UsedPower * 2))
                                     {
                                         // Batteries alone are enough: shut down every generator

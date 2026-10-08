@@ -1,60 +1,100 @@
-﻿using Audio;
+﻿using System.Collections.Generic;
 using HarmonyLib;
-using System;
 using UnityEngine;
-using static ItemActionConnectPower;
 
 namespace YD_Circuit
 {
     public class GlobalPatch
     {
+        public static void PowerReceived(PowerItem Item, ref ushort power)
+        {
+            ushort num = (ushort)Mathf.Min(Item.RequiredPower, power);
+            bool flag = num == Item.RequiredPower;
+            if (flag != Item.isPowered)
+            {
+                Item.isPowered = flag;
+                Item.IsPoweredChanged(flag);
+                if (Item.TileEntity != null)
+                {
+                    Item.TileEntity.SetModified();
+                }
+            }
+            power -= num;
+        }
+
+
+        [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.Update))]
+        public static class Patch_HandleUpdate
+        {
+            public static bool Prefix(PowerSource __instance)
+            {
+                YDPowerAggregation.Instance.Update();
+
+                if (__instance != null)
+                {
+                    if (__instance is PowerBatteryBank || __instance is PowerGenerator)
+                    {
+                        if (__instance.Root == null)
+                        {
+                            if (__instance.Children.Count > 0)
+                            {
+                                int State = YDPowerAggregation.Instance.UpdateArray(__instance);
+
+                                if (State > 0)
+                                {
+                                    Debug.Log("Add");
+                                }
+                                else
+                                if (State == 0)
+                                {
+                                    ushort TotalPower = 0;
+
+                                    var Key = new RootItem(((PowerItem)__instance)).UniqueID;
+
+                                    if (YDPowerAggregation.Instance.Power.ContainsKey(Key))
+                                    {
+                                        var PowerValue = YDPowerAggregation.Instance.Power[Key];
+
+                                        using (PowerValue.AcquireLock())
+                                        {
+                                            TotalPower = (ushort)PowerValue.Power;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Debug.Log("NotSend");
+                                    }
+
+                                    ushort Before = TotalPower;
+
+                                    YDPowerAggregation.GetAllConsumerNodes((PowerItem)__instance, out List<PowerItem> Children);
+
+                                    for (int i = 0; i < Children.Count; i++)
+                                    {
+                                        var Child = Children[i];
+                                        GlobalPatch.PowerReceived(Child, ref TotalPower);
+                                        if (TotalPower <= 0) break;
+                                    }
+
+                                    Debug.Log("Count:" + Children.Count);
+
+                                    int LastPowerUsed = (int)((int)Before - (int)TotalPower);
+                                    Debug.Log("SendPower:" + LastPowerUsed);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return true;
+            }
+        }
+
         [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.HandleSendPower))]
         public static class Patch_HandleSendPower
         {
             static bool Prefix(PowerSource __instance)
             {
-                if (__instance == null)
-                    return false;
-
-                if (__instance.Root != null)
-                    return false;
-
-                if (!__instance.hasChangesLocal)
-                    return false;
-
-                if (__instance is PowerItem)
-                {
-                    ushort TotalPower = 0;
-
-                    var Key = new RootItem(((PowerItem)__instance)).UniqueID;
-
-                    if (YDPowerAggregation.Instance.Power.ContainsKey(Key))
-                    {
-                        var PowerValue = YDPowerAggregation.Instance.Power[Key];
-
-                        using (PowerValue.AcquireLock())
-                        {
-                            TotalPower = (ushort)PowerValue.Power;
-                        }
-                    }
-
-                    ushort Before = TotalPower;
-                    var Children = __instance.Children;
-                    for (int i = 0; i < Children.Count; i++)
-                    {
-                        var Child = Children[i];
-                        if (Child is PowerSource) continue;
-                        Child.HandlePowerReceived(ref TotalPower);
-                        if (TotalPower <= 0) break;
-                    }
-
-                    __instance.LastPowerUsed = (ushort)(Before - TotalPower);
-                }
-                else
-                {
-                    return true;
-                }
-
                 return false;
             }
         }
@@ -365,26 +405,6 @@ namespace YD_Circuit
         //    }
         //}
 
-        [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.Update))]
-        public static class Patch_HandleUpdate
-        {
-            public static bool Prefix(PowerSource __instance)
-            {
-                YDPowerAggregation.Instance.Update();
 
-                if (__instance != null)
-                {
-                    if (__instance is PowerBatteryBank || __instance is PowerGenerator)
-                    {
-                        if (__instance.Root == null)
-                        {
-                            YDPowerAggregation.Instance.Update(__instance);
-                        }
-                    }
-                }
-
-                return true;
-            }
-        }
     }
 }

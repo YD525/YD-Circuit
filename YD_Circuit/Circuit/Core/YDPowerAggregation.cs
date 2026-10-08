@@ -27,9 +27,17 @@ namespace YD_Circuit
                 foreach (var Pair in Devices)
                 {
                     var Item = Pair.Value;
-                    bool Expired = Item == null || Item.Object == null || Item.Object.Root != null
+                    bool Expired = Item == null || Item.Object == null || Item.Object.Root != null || Item.Object.Parent != null 
                         || !PowerManager.Instance.PowerItemDictionary.TryGetValue(Item.Object.Position, out var Cur)
                         || Cur != Item.Object;
+
+                    if (Item.Object.Children != null)
+                    {
+                        if (Item.Object.Children.Count == 0)
+                        {
+                            Expired = true;
+                        }
+                    }
 
                     if (Expired)
                     {
@@ -40,6 +48,48 @@ namespace YD_Circuit
             });
         }
 
+        public static void GetAllConsumerNodes(PowerItem StartNode, out List<PowerItem> Consumers)
+        {
+            Consumers = new List<PowerItem>();
+
+            if (StartNode == null)
+                return;
+
+            HashSet<PowerItem> Visited = new HashSet<PowerItem>();
+
+            Visited.Add(StartNode);
+
+            if (StartNode.PowerChildren() && StartNode.Children != null)
+            {
+                for (int i = 0; i < StartNode.Children.Count; i++)
+                {
+                    TraverseConsumerNodes(StartNode.Children[i], Visited, Consumers);
+                }
+            }
+        }
+
+        private static void TraverseConsumerNodes(PowerItem CurrentNode, HashSet<PowerItem> Visited, List<PowerItem> Consumers)
+        {
+            if (CurrentNode == null)
+                return;
+
+            if (!Visited.Add(CurrentNode))
+                return;
+
+            if (CurrentNode.PowerItemType != PowerItemTypes.Generator &&
+                CurrentNode.PowerItemType != PowerItemTypes.BatteryBank)
+            {
+                Consumers.Add(CurrentNode);
+            }
+
+            if (CurrentNode.PowerChildren() && CurrentNode.Children != null)
+            {
+                for (int i = 0; i < CurrentNode.Children.Count; i++)
+                {
+                    TraverseConsumerNodes(CurrentNode.Children[i], Visited, Consumers);
+                }
+            }
+        }
         public static void GetAllConnectedNodes(PowerItem StartNode, out List<PowerSourceInFo> InFos, out Dictionary<long, PowerItem> Pool)
         {
             InFos = new List<PowerSourceInFo>();
@@ -123,12 +173,14 @@ namespace YD_Circuit
                     {
                         // Run the power balance check once per second
                         Thread.Sleep(1000);
-                        Debug.Log("Circuit Check...");
+                        
                         try
                         {
                             CheckExpired();
 
                             var Array = Devices.ToList();
+
+                            Debug.Log("Circuit Check..." + Array.Count);
 
                             for (int i = 0; i < Array.Count; i++)
                             {
@@ -459,7 +511,7 @@ namespace YD_Circuit
                                     {
                                         using (PowerValue.AcquireLock())
                                         {
-                                            Debug.Log("SupplyMode:" + PowerSupplyMode.G_P.ToString());
+                                            Debug.Log("SupplyMode:" + PowerValue.SupplyMode.ToString());
                                         }
                                     }
                                 }
@@ -558,7 +610,7 @@ namespace YD_Circuit
             }
         }
 
-        public void Update(PowerSource Device)
+        public int UpdateArray(PowerSource Device)
         {
             if (Device != null)
             {
@@ -566,7 +618,7 @@ namespace YD_Circuit
                 {
                     if (Device == null)
                     {
-                        return;
+                        return -1;
                     }
                     // If there is no parent device, the device itself is the root
                     PowerItem Root = Device.Root ?? Device;
@@ -574,10 +626,18 @@ namespace YD_Circuit
                     var Item = new RootItem(Root);
                     if (!Devices.ContainsKey(Item.UniqueID))
                     {
-                        Devices.TryAdd(Item.UniqueID, Item);
+                        if (Devices.TryAdd(Item.UniqueID, Item))
+                        {
+                            return 1;
+                        }
+                    }
+                    else
+                    {
+                        return 0;
                     }
                 }
             }
+            return -1;
         }
 
         public static int CalculateSubtreePowerRequired(PowerItem Item)
@@ -600,7 +660,12 @@ namespace YD_Circuit
                     TotalRequired += Item.RequiredPower;
                 }
             }
-            else
+            else if(Item is PowerGenerator)
+            {
+                if((Item as PowerGenerator).CurrentFuel > 0)
+                TotalRequired += 1;
+            }
+            else 
             {
                 TotalRequired += Item.RequiredPower;
             }

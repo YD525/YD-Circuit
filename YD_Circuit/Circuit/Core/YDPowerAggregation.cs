@@ -255,10 +255,10 @@ namespace YD_Circuit
                                     if (UsedPower > 0)
                                     {
                                         Debug.Log("B_P:" + B_P);
-                                        Debug.Log("G_P:" + B_P);
-                                        Debug.Log("G_B_P:" + B_P);
-                                        Debug.Log("EG_P:" + B_P);
-                                        Debug.Log("EG_B_P:" + B_P);
+                                        Debug.Log("G_P:" + G_P);
+                                        Debug.Log("G_B_P:" + G_B_P);
+                                        Debug.Log("EG_P:" + EG_P);
+                                        Debug.Log("EG_B_P:" + EG_B_P);
                                         Debug.Log("UsedPower:" + UsedPower);
                                     }
 
@@ -452,6 +452,14 @@ namespace YD_Circuit
                                         {
                                             PowerValue.Power = G_B_P;
                                             PowerValue.SupplyMode = PowerSupplyMode.EG_B_P;
+                                        }
+                                    }
+
+                                    if (UsedPower > 0)
+                                    {
+                                        using (PowerValue.AcquireLock())
+                                        {
+                                            Debug.Log("SupplyMode:" + PowerSupplyMode.G_P.ToString());
                                         }
                                     }
                                 }

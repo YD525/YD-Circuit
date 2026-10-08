@@ -13,11 +13,6 @@ namespace YD_Circuit
 
             new Harmony("YD.Circuit").PatchAll(Assembly.GetExecutingAssembly());
 
-            Main(_modInstance);
-        }
-
-        public void Main(Mod Instance)
-        {
             YDPowerAggregation.Instance.Start();
         }
     }

@@ -1,91 +1,390 @@
-﻿using HarmonyLib;
-public class GlobalPatch
+﻿using Audio;
+using HarmonyLib;
+using System;
+using UnityEngine;
+using static ItemActionConnectPower;
+
+namespace YD_Circuit
 {
-    [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.HandleSendPower))]
-    public static class Patch_HandleSendPower
+    public class GlobalPatch
     {
-        static bool Prefix(PowerSource __instance)
+        [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.HandleSendPower))]
+        public static class Patch_HandleSendPower
         {
-            if (__instance == null)
-                return false;
-
-            if (__instance.Root != null)
-                return false;
-
-            if (!__instance.hasChangesLocal)
-                return false;
-
-            if (__instance is PowerItem)
+            static bool Prefix(PowerSource __instance)
             {
-                ushort TotalPower = 0;
+                if (__instance == null)
+                    return false;
 
-                var Key = new RootItem(((PowerItem)__instance)).UniqueID;
+                if (__instance.Root != null)
+                    return false;
 
-                if (YDPowerAggregation.Instance.Power.ContainsKey(Key))
+                if (!__instance.hasChangesLocal)
+                    return false;
+
+                if (__instance is PowerItem)
                 {
-                    var PowerValue = YDPowerAggregation.Instance.Power[Key];
+                    ushort TotalPower = 0;
 
-                    using (PowerValue.AcquireLock())
+                    var Key = new RootItem(((PowerItem)__instance)).UniqueID;
+
+                    if (YDPowerAggregation.Instance.Power.ContainsKey(Key))
                     {
-                        TotalPower = (ushort)PowerValue.Power;
+                        var PowerValue = YDPowerAggregation.Instance.Power[Key];
+
+                        using (PowerValue.AcquireLock())
+                        {
+                            TotalPower = (ushort)PowerValue.Power;
+                        }
                     }
-                }
 
-                ushort Before = TotalPower;
-                var Children = __instance.Children;
-                for (int i = 0; i < Children.Count; i++)
+                    ushort Before = TotalPower;
+                    var Children = __instance.Children;
+                    for (int i = 0; i < Children.Count; i++)
+                    {
+                        var Child = Children[i];
+                        if (Child is PowerSource) continue;
+                        Child.HandlePowerReceived(ref TotalPower);
+                        if (TotalPower <= 0) break;
+                    }
+
+                    __instance.LastPowerUsed = (ushort)(Before - TotalPower);
+                }
+                else
                 {
-                    var Child = Children[i];
-                    if (Child is PowerSource) continue;
-                    Child.HandlePowerReceived(ref TotalPower);
-                    if (TotalPower <= 0) break;
+                    return true;
                 }
 
-                __instance.LastPowerUsed = (ushort)(Before - TotalPower);
+                return false;
             }
-            else
+        }
+
+        [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.CanParent))]
+        public static class Patch_HandleCanParent
+        {
+            static bool Prefix(PowerSource __instance, ref bool __result)
             {
+                if (__instance is PowerBatteryBank || __instance is PowerGenerator)
+                {
+                    __result = true;
+                    return false;
+                }
+
                 return true;
             }
-
-            return false;
         }
-    }
 
-    [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.CanParent))]
-    public static class Patch_HandleCanParent
-    {
-        static bool Prefix(PowerSource __instance, ref bool __result)
+        [HarmonyPatch(typeof(TileEntityPowerSource), nameof(TileEntityPowerSource.CanHaveParent))]
+        public static class Patch_HandleCanHaveParent
         {
-            if (__instance is PowerBatteryBank || __instance is PowerGenerator)
+            static bool Prefix(TileEntityPowerSource __instance, IPowered powered, ref bool __result)
             {
                 __result = true;
                 return false;
             }
-
-            return true;
         }
-    }
 
-    [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.Update))]
-    public static class Patch_HandleUpdate
-    {
-        public static bool Prefix(PowerSource __instance)
+        //[HarmonyPatch(typeof(ItemActionConnectPower), nameof(ItemActionConnectPower.OnHoldingUpdate))]
+        //public static class Patch_HandleOnHoldingUpdate
+        //{
+        //    static void Postfix(ItemActionConnectPower __instance, ItemActionData _actionData)
+        //    {
+        //        TileEntityPowered tileEntityPowered = null;
+        //        ConnectPowerData connectPowerData = (ConnectPowerData)_actionData;
+        //        WorldRayHitInfo hitInfo = ((EntityPlayerLocal)_actionData.invData.holdingEntity).HitInfo;
+        //        Vector3i blockPos = hitInfo.hit.blockPos;
+        //        bool flag = true;
+        //        if (connectPowerData.invData.holdingEntity is EntityPlayerLocal && connectPowerData.playerUI == null)
+        //        {
+        //            connectPowerData.playerUI = LocalPlayerUI.GetUIForPlayer(connectPowerData.invData.holdingEntity as EntityPlayerLocal);
+        //        }
+
+        //        if (connectPowerData.playerUI != null && !connectPowerData.invData.world.CanPlaceBlockAt(blockPos, connectPowerData.invData.world.gameManager.GetPersistentLocalPlayer()))
+        //        {
+        //            connectPowerData.isFriendly = false;
+        //            connectPowerData.playerUI.nguiWindowManager.SetLabelText(EnumNGUIWindow.PowerInfo, null);
+
+        //            Debug.Log("AA -1");
+        //            return;
+        //        }
+
+        //        connectPowerData.isFriendly = true;
+        //        if (hitInfo.bHitValid)
+        //        {
+        //            int num = (int)(Constants.cDigAndBuildDistance * Constants.cDigAndBuildDistance);
+        //            if (hitInfo.hit.distanceSq <= (float)num)
+        //            {
+        //                BlockValue block = _actionData.invData.world.GetBlock(blockPos);
+        //                if (block.Block is BlockPowered blockPowered)
+        //                {
+        //                    if (connectPowerData.playerUI != null)
+        //                    {
+        //                        Color value = Color.grey;
+        //                        int num2 = blockPowered.RequiredPower;
+        //                        if (blockPowered.isMultiBlock && block.ischild)
+        //                        {
+        //                            connectPowerData.playerUI.nguiWindowManager.SetLabelText(EnumNGUIWindow.PowerInfo, null);
+
+        //                            Debug.Log("AA -2");
+        //                            return;
+        //                        }
+
+        //                        Vector3i p = blockPos;
+        //                        ChunkCluster chunkCache = _actionData.invData.world.ChunkCache;
+        //                        if (chunkCache != null)
+        //                        {
+        //                            Chunk chunk = (Chunk)chunkCache.GetChunkSync(World.toChunkXZ(p.x), p.y, World.toChunkXZ(p.z));
+        //                            if (chunk != null)
+        //                            {
+        //                                if (chunk.GetTileEntity(World.toBlock(p)) is TileEntityPowered tileEntityPowered2)
+        //                                {
+        //                                    value = (tileEntityPowered2.IsPowered ? Color.yellow : Color.grey);
+        //                                    num2 = tileEntityPowered2.PowerUsed;
+        //                                }
+        //                                else
+        //                                {
+        //                                    value = Color.grey;
+        //                                }
+        //                            }
+        //                        }
+
+        //                        connectPowerData.playerUI.nguiWindowManager.SetLabel(EnumNGUIWindow.PowerInfo, $"{num2}W", value);
+        //                    }
+
+        //                    flag = false;
+        //                }
+        //            }
+        //        }
+
+        //        if (flag && connectPowerData.playerUI != null)
+        //        {
+        //            connectPowerData.playerUI.nguiWindowManager.SetLabelText(EnumNGUIWindow.PowerInfo, null);
+        //        }
+
+        //        if (connectPowerData.HasStartPoint)
+        //        {
+        //            if (connectPowerData.wireNode == null)
+        //            {
+        //                Debug.Log("AA -3");
+        //                return;
+        //            }
+
+        //            float num3 = Vector3.Distance(connectPowerData.startPoint.ToVector3(), _actionData.invData.holdingEntity.position);
+        //            if (num3 < (float)(__instance.maxWireLength - 5))
+        //            {
+        //                connectPowerData.inRange = true;
+        //                connectPowerData.wireNode.wireColor = new Color(0f, 0f, 0f, 0f);
+        //            }
+
+        //            if (num3 > (float)(__instance.maxWireLength - 5))
+        //            {
+        //                connectPowerData.inRange = false;
+        //                connectPowerData.wireNode.wireColor = Color.red;
+        //            }
+
+        //            if (num3 > (float)__instance.maxWireLength)
+        //            {
+        //                connectPowerData.HasStartPoint = false;
+        //                if (connectPowerData.wireNode != null)
+        //                {
+        //                    WireManager.Instance.RemoveActiveWire(connectPowerData.wireNode);
+        //                    UnityEngine.Object.Destroy(connectPowerData.wireNode.gameObject);
+        //                    connectPowerData.wireNode = null;
+        //                }
+
+        //                if (!(connectPowerData.invData.world.GetChunkFromWorldPos(connectPowerData.startPoint) is Chunk))
+        //                {
+        //                    Debug.Log("AA -5");
+        //                    return;
+        //                }
+
+        //                if (connectPowerData.invData.world.GetTileEntity(connectPowerData.startPoint) is TileEntityPowered)
+        //                {
+        //                    if (SingletonMonoBehaviour<ConnectionManager>.Instance.IsServer)
+        //                    {
+        //                        SingletonMonoBehaviour<ConnectionManager>.Instance.SendPackage(NetPackageManager.GetPackage<NetPackageWireToolActions>().Setup(NetPackageWireToolActions.WireActions.RemoveWire, Vector3i.zero, _actionData.invData.holdingEntity.entityId));
+        //                    }
+        //                    else
+        //                    {
+        //                        SingletonMonoBehaviour<ConnectionManager>.Instance.SendToServer(NetPackageManager.GetPackage<NetPackageWireToolActions>().Setup(NetPackageWireToolActions.WireActions.RemoveWire, Vector3i.zero, _actionData.invData.holdingEntity.entityId));
+        //                    }
+        //                }
+
+        //                _actionData.invData.holdingEntity.RightArmAnimationUse = true;
+        //                connectPowerData.invData.holdingEntity.PlayOneShot("ui_denied");
+        //            }
+        //        }
+
+        //        if (!connectPowerData.StartLink || Time.time - connectPowerData.lastUseTime < AnimationDelayData.AnimationDelay[connectPowerData.invData.item.HoldType.Value].RayCast)
+        //        {
+        //            Debug.Log("AA -6" + connectPowerData.StartLink.ToString());
+        //            return;
+        //        }
+
+        //        connectPowerData.StartLink = false;
+        //        ConnectPowerData connectPowerData2 = (ConnectPowerData)_actionData;
+        //        ItemInventoryData invData = _actionData.invData;
+        //        _ = hitInfo.lastBlockPos;
+        //        if (!hitInfo.bHitValid || hitInfo.tag.StartsWith("E_"))
+        //        {
+        //            connectPowerData2.HasStartPoint = false;
+        //            Debug.Log("AA -7");
+        //            return;
+        //        }
+
+        //        if (connectPowerData.invData.itemValue.MaxUseTimes > 0 && connectPowerData.invData.itemValue.UseTimes >= (float)connectPowerData.invData.itemValue.MaxUseTimes)
+        //        {
+        //            EntityPlayerLocal localPlayer = _actionData.invData.holdingEntity as EntityPlayerLocal;
+        //            __instance.HandleJamSound(connectPowerData.invData.itemValue, __instance.item, localPlayer);
+        //            Debug.Log("AA -8");
+        //            return;
+        //        }
+
+        //        if (connectPowerData.invData.itemValue.MaxUseTimes > 0)
+        //        {
+        //            _actionData.invData.itemValue.UseTimes += EffectManager.GetValue(PassiveEffects.DegradationPerUse, _actionData.invData.itemValue, 1f, invData.holdingEntity, null, (_actionData.invData.itemValue.ItemClass != null) ? _actionData.invData.itemValue.ItemClass.ItemTags : FastTags<TagGroup.Global>.none) * ItemAction.ItemDegradationModifier;
+        //            __instance.HandleItemBreak(_actionData);
+        //        }
+        //        if (connectPowerData2.HasStartPoint)
+        //        {
+        //            if (connectPowerData2.startPoint == hitInfo.hit.blockPos || !connectPowerData2.inRange || Vector3.Distance(connectPowerData.startPoint.ToVector3(), hitInfo.hit.blockPos.ToVector3()) > (float)__instance.maxWireLength)
+        //            {
+        //                Debug.Log("AA -9");
+        //                return;
+        //            }
+        //            TileEntityPowered poweredBlock = __instance.GetPoweredBlock(invData);
+        //            if (poweredBlock == null)
+        //            {
+        //                Debug.Log("AA -10");
+        //                return;
+        //            }
+        //            TileEntityPowered poweredBlock2 = __instance.GetPoweredBlock(connectPowerData2.startPoint);
+        //            if (poweredBlock2 == null)
+        //            {
+        //                Debug.Log("AA -11");
+        //                return;
+        //            }
+
+        //            if (!poweredBlock.CanHaveParent(poweredBlock2))
+        //            {
+        //                GameManager.ShowTooltip(_actionData.invData.holdingEntity as EntityPlayerLocal, Localization.Get("ttCantHaveParent"));
+        //                invData.holdingEntity.PlayOneShot("ui_denied");
+        //                Debug.Log("AA -12");
+        //                return;
+        //            }
+
+        //            if (poweredBlock2.ChildCount > 8)
+        //            {
+        //                GameManager.ShowTooltip(_actionData.invData.holdingEntity as EntityPlayerLocal, Localization.Get("ttWireLimit"));
+        //                invData.holdingEntity.PlayOneShot("ui_denied");
+        //                Debug.Log("AA -13");
+        //                return;
+        //            }
+        //            //AAAAAAA
+        //            poweredBlock.SetParentWithWireTool(poweredBlock2, invData.holdingEntity.entityId);
+        //            _actionData.invData.holdingEntity.RightArmAnimationUse = true;
+        //            connectPowerData2.HasStartPoint = false;
+        //            if (SingletonMonoBehaviour<ConnectionManager>.Instance.IsServer)
+        //            {
+        //                SingletonMonoBehaviour<ConnectionManager>.Instance.SendPackage(NetPackageManager.GetPackage<NetPackageWireToolActions>().Setup(NetPackageWireToolActions.WireActions.RemoveWire, Vector3i.zero, _actionData.invData.holdingEntity.entityId));
+        //            }
+        //            else
+        //            {
+        //                SingletonMonoBehaviour<ConnectionManager>.Instance.SendToServer(NetPackageManager.GetPackage<NetPackageWireToolActions>().Setup(NetPackageWireToolActions.WireActions.RemoveWire, Vector3i.zero, _actionData.invData.holdingEntity.entityId));
+        //            }
+
+        //            EntityAlive holdingEntity = _actionData.invData.holdingEntity;
+        //            string name = "wire_tool_" + (poweredBlock2.IsPowered ? "sparks" : "dust");
+        //            Transform handTransform = __instance.GetHandTransform(holdingEntity);
+        //            GameManager.Instance.SpawnParticleEffectServer(new ParticleEffect(name, handTransform.position + Origin.position, handTransform.rotation, holdingEntity.GetLightBrightness(), Color.white), invData.holdingEntity.entityId);
+        //            if (connectPowerData.wireNode != null)
+        //            {
+        //                WireManager.Instance.RemoveActiveWire(connectPowerData.wireNode);
+        //                UnityEngine.Object.Destroy(connectPowerData.wireNode.gameObject);
+        //                connectPowerData.wireNode = null;
+        //            }
+
+        //            __instance.DecreaseDurability(connectPowerData);
+        //            Debug.Log("AA -15");
+        //            return;
+        //        }
+
+        //        TileEntityPowered poweredBlock3 = __instance.GetPoweredBlock(invData);
+        //        if (poweredBlock3 == null)
+        //        {
+        //            Debug.Log("AA -16");
+        //            return;
+        //        }
+
+        //        _actionData.invData.holdingEntity.RightArmAnimationUse = true;
+        //        connectPowerData2.startPoint = hitInfo.hit.blockPos;
+        //        connectPowerData2.HasStartPoint = true;
+        //        EntityAlive holdingEntity2 = _actionData.invData.holdingEntity;
+        //        if (SingletonMonoBehaviour<ConnectionManager>.Instance.IsServer)
+        //        {
+        //            SingletonMonoBehaviour<ConnectionManager>.Instance.SendPackage(NetPackageManager.GetPackage<NetPackageWireToolActions>().Setup(NetPackageWireToolActions.WireActions.AddWire, connectPowerData2.startPoint, holdingEntity2.entityId));
+        //        }
+        //        else
+        //        {
+        //            SingletonMonoBehaviour<ConnectionManager>.Instance.SendToServer(NetPackageManager.GetPackage<NetPackageWireToolActions>().Setup(NetPackageWireToolActions.WireActions.AddWire, connectPowerData2.startPoint, holdingEntity2.entityId));
+        //        }
+
+        //        Manager.BroadcastPlay(poweredBlock3.ToWorldPos().ToVector3(), poweredBlock3.IsPowered ? "wire_live_connect" : "wire_dead_connect");
+        //        Transform handTransform2 = __instance.GetHandTransform(holdingEntity2);
+        //        if (!(handTransform2 != null))
+        //        {
+        //            Debug.Log("AA -17");
+        //            return;
+        //        }
+
+        //        Transform transform = handTransform2.FindInChilds("wire_mesh");
+        //        if (!(transform == null))
+        //        {
+        //            if (connectPowerData2.wireNode != null)
+        //            {
+        //                WireManager.Instance.RemoveActiveWire(connectPowerData2.wireNode);
+        //                UnityEngine.Object.Destroy(connectPowerData2.wireNode.gameObject);
+        //                connectPowerData2.wireNode = null;
+        //            }
+
+        //            WireNode component = ((GameObject)UnityEngine.Object.Instantiate(Resources.Load("Prefabs/WireNode"))).GetComponent<WireNode>();
+        //            component.LocalPosition = hitInfo.hit.blockPos.ToVector3() - Origin.position;
+        //            component.localOffset = poweredBlock3.GetWireOffset();
+        //            component.localOffset.x += 0.5f;
+        //            component.localOffset.y += 0.5f;
+        //            component.localOffset.z += 0.5f;
+        //            component.Source = transform.gameObject;
+        //            component.sourceOffset = __instance.wireOffset;
+        //            component.TogglePulse(isOn: false);
+        //            component.SetPulseSpeed(360f);
+        //            connectPowerData2.wireNode = component;
+        //            WireManager.Instance.AddActiveWire(component);
+        //            string name2 = "wire_tool_" + (poweredBlock3.IsPowered ? "sparks" : "dust");
+        //            GameManager.Instance.SpawnParticleEffectServer(new ParticleEffect(name2, handTransform2.position + Origin.position, handTransform2.rotation, holdingEntity2.GetLightBrightness(), Color.white), invData.holdingEntity.entityId);
+        //        }
+        //    }
+        //}
+
+        [HarmonyPatch(typeof(PowerSource), nameof(PowerSource.Update))]
+        public static class Patch_HandleUpdate
         {
-            YDPowerAggregation.Instance.Update();
-
-            if (__instance != null)
+            public static bool Prefix(PowerSource __instance)
             {
-                if (__instance is PowerBatteryBank || __instance is PowerGenerator)
+                YDPowerAggregation.Instance.Update();
+
+                if (__instance != null)
                 {
-                    if (__instance.Root == null)
+                    if (__instance is PowerBatteryBank || __instance is PowerGenerator)
                     {
-                        YDPowerAggregation.Instance.Update(__instance);
+                        if (__instance.Root == null)
+                        {
+                            YDPowerAggregation.Instance.Update(__instance);
+                        }
                     }
                 }
-            }
 
-            return true; 
+                return true;
+            }
         }
     }
 }

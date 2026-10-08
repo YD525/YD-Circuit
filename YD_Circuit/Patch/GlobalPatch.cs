@@ -46,8 +46,7 @@ public class GlobalPatch
                 return false;
             }
 
-            __result = false;
-            return false;
+            return true;
         }
     }
 }

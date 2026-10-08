@@ -51,8 +51,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Circuit.cs" />
+    <Compile Include="Circuit\Struct\Struct.cs" />
     <Compile Include="Log\Log.cs" />
-    <Compile Include="Power\Core\YDPowerAggregation.cs" />
+    <Compile Include="Circuit\Core\YDPowerAggregation.cs" />
     <Compile Include="Patch\GlobalPatch.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
